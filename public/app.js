@@ -55,6 +55,25 @@ function showSign() {
     el('sign-name').textContent = sign.name;
     el('now-showing').textContent = describe(sign.state);
     el('updated').textContent = `Last changed ${new Date(sign.updatedAt).toLocaleString()}`;
+    showOnline(sign.online);
+}
+
+function showOnline(online) {
+    el('online').textContent = online ? 'Sign online' : 'Sign offline';
+    el('online').className = `badge ${online ? 'online' : 'offline'}`;
+}
+
+// Re-checks every 10 seconds whether the sign is connected.
+async function refreshOnline() {
+    try {
+        const response = await fetch('/api/signs');
+        if (!response.ok) return;
+        const data = await response.json();
+        const latest = data.signs.find((item) => item.id === sign.id);
+        if (latest) showOnline(latest.online);
+    } catch {
+        // Ignore; the next check will try again.
+    }
 }
 
 async function saveState(state) {
@@ -76,7 +95,7 @@ async function saveState(state) {
         }
         sign = data.sign;
         showSign();
-        setStatus('Saved.');
+        setStatus(sign.online ? 'Sent to the sign.' : 'Saved. The sign is offline and will show this when it reconnects.');
     } catch {
         setStatus('Could not reach the server. Check your connection and try again.', true);
     }
@@ -102,6 +121,7 @@ async function load() {
         if (!selected('color')) select('color', COLORS[0][1]);
         select('icon', sign.state.icon || '');
         showSign();
+        setInterval(refreshOnline, 10000);
     } catch {
         setStatus('Could not load the sign. Refresh the page to try again.', true);
     }

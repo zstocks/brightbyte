@@ -49,7 +49,9 @@ const sendJson = (res, status, data) =>
 const redirect = (res, location, headers = {}) =>
     send(res, 303, 'text/plain; charset=utf-8', 'Redirecting', { Location: location, ...headers });
 
-export function createApp({ config, db }) {
+// hub is the device hub from devices.js. It is optional so the
+// HTTP side can be tested without it.
+export function createApp({ config, db, hub = null }) {
     const limiter = createLoginLimiter();
     const page = (name) => readFileSync(join(PUBLIC_DIR, name), 'utf8');
     const loginPage = page('login.html');
@@ -126,7 +128,11 @@ export function createApp({ config, db }) {
                 return send(res, 200, 'text/html; charset=utf-8', dashboardPage);
             }
             if (isRead && path === '/api/signs') {
-                return sendJson(res, 200, { signs: db.listSigns(), icons: ICONS });
+                const signs = db.listSigns().map((sign) => ({
+                    ...sign,
+                    online: hub ? hub.isOnline(sign.id) : false,
+                }));
+                return sendJson(res, 200, { signs, icons: ICONS });
             }
 
             const stateRoute = path.match(/^\/api\/signs\/([a-z0-9-]{1,40})\/state$/);
@@ -142,7 +148,8 @@ export function createApp({ config, db }) {
                 if (!result.ok) return sendJson(res, 400, { error: result.error });
                 const sign = db.saveState(stateRoute[1], result.state);
                 if (!sign) return sendJson(res, 404, { error: 'No sign with that ID.' });
-                return sendJson(res, 200, { sign });
+                if (hub) hub.pushState(sign.id, sign.state);
+                return sendJson(res, 200, { sign: { ...sign, online: hub ? hub.isOnline(sign.id) : false } });
             }
 
             if (path.startsWith('/api/')) return sendJson(res, 404, { error: 'Not found.' });
