@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>BrightByte</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <header class="topbar">
+        <h1>BrightByte</h1>
+        <form method="post" action="/logout">
+            <button type="submit" class="quiet">Log out</button>
+        </form>
+    </header>
+
+    <main>
+        <section class="card">
+            <h2 id="sign-name">Loading...</h2>
+            <p class="now">Now showing: <strong id="now-showing">...</strong></p>
+            <p class="updated" id="updated"></p>
+        </section>
+
+        <section class="card">
+            <h2>Send a message</h2>
+            <form id="message-form">
+                <label for="text">Message</label>
+                <input id="text" name="text" type="text" maxlength="200" autocomplete="off" required>
+
+                <fieldset>
+                    <legend>Color</legend>
+                    <div class="choices" id="colors"></div>
+                </fieldset>
+
+                <fieldset>
+                    <legend>Icon</legend>
+                    <div class="choices" id="icons"></div>
+                </fieldset>
+
+                <button type="submit" class="primary">Send to sign</button>
+            </form>
+        </section>
+
+        <section class="card">
+            <h2>Other modes</h2>
+            <div class="row">
+                <button type="button" id="show-clock">Show clock</button>
+                <button type="button" id="go-dark">Turn display off</button>
+            </div>
+        </section>
+
+        <p id="status" role="status" aria-live="polite"></p>
+    </main>
+
+    <script src="/app.js"></script>
+</body>
+</html>
