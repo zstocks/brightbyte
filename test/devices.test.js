@@ -12,6 +12,8 @@ const config = {
     appPassword: 'correct horse',
     sessionSecret: 'a-test-secret-that-is-long-enough-123',
     deviceToken: 'the-device-token',
+    apiToken: '',
+    timezone: 'America/Denver',
     secureCookies: false,
 };
 
@@ -20,7 +22,7 @@ let server, db, hub, signs, port, cookie;
 before(async () => {
     db = openDatabase(':memory:');
     hub = createDeviceHub({ config, db, heartbeatMs: 50 });
-    signs = createSignService({ db, hub });
+    signs = createSignService({ db, hub, timezone: 'America/Denver' });
     signs.start();
     server = http.createServer(createApp({ config, db, signs, hub }));
     server.on('upgrade', (req, socket, head) => hub.handleUpgrade(req, socket, head));

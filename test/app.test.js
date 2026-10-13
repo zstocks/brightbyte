@@ -9,6 +9,8 @@ const config = {
     appPassword: 'correct horse',
     sessionSecret: 'a-test-secret-that-is-long-enough-123',
     deviceToken: 'device',
+    apiToken: 'the-key-token',
+    timezone: 'America/Denver',
     secureCookies: false,
 };
 
@@ -16,7 +18,7 @@ let server, base, db, signs, cookie;
 
 before(async () => {
     db = openDatabase(':memory:');
-    signs = createSignService({ db });
+    signs = createSignService({ db, timezone: config.timezone });
     signs.start();
     server = http.createServer(createApp({ config, db, signs }));
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -92,6 +94,9 @@ test('the sign list includes settings, the current state and presets', async () 
     assert.equal(data.signs[0].online, false);
     assert.deepEqual(data.presets, []);
     assert.ok(data.icons.includes('dnd'));
+    assert.equal(data.timezone, 'America/Denver');
+    assert.equal(data.keysEnabled, true);
+    assert.deepEqual([data.signs[0].source, data.signs[0].schedules], ['default', []]);
 });
 
 test('sending and clearing a custom message', async () => {
@@ -160,4 +165,81 @@ test('oversized bodies are refused', async () => {
         body: JSON.stringify({ text: 'x'.repeat(20000) }),
     }).catch(() => ({ status: 'connection closed' }));
     assert.notEqual(response.status, 200);
+});
+
+test('schedules can be created, updated and deleted', async () => {
+    const body = { text: 'Standup', color: '#00dc3c', icon: 'mic', kind: 'weekly', days: [1, 3], start: '09:00', end: '09:15' };
+    const created = await call('POST', '/api/signs/desk/schedules', body);
+    assert.equal(created.status, 201);
+    const schedule = created.data.sign.schedules[0];
+    assert.deepEqual([schedule.text, schedule.days, schedule.enabled], ['Standup', [1, 3], true]);
+
+    const changed = await call('PUT', `/api/schedules/${schedule.id}`, { ...body, enabled: false, end: '09:30' });
+    assert.deepEqual([changed.data.sign.schedules[0].enabled, changed.data.sign.schedules[0].end], [false, '09:30']);
+
+    assert.equal((await call('POST', '/api/signs/desk/schedules', { ...body, days: [] })).status, 400);
+    assert.equal((await call('POST', '/api/signs/nope/schedules', body)).status, 404);
+    assert.equal((await call('PUT', '/api/schedules/999', body)).status, 404);
+
+    const removed = await call('DELETE', `/api/schedules/${schedule.id}`);
+    assert.deepEqual(removed.data.sign.schedules, []);
+    assert.equal((await call('DELETE', `/api/schedules/${schedule.id}`)).status, 404);
+});
+
+// ----- Keys (Stream Deck) -----
+
+const key = (path, token = config.apiToken, ip = '198.51.100.1', method = 'POST') => fetch(`${base}/api/keys/${path}`, {
+    method,
+    headers: { 'X-Real-IP': ip, ...(token === null ? {} : { Authorization: `Bearer ${token}` }) },
+}).then(async (response) => ({ status: response.status, data: await response.json() }));
+
+test('keys need the API token, not the login cookie', async () => {
+    assert.equal((await key('clear', null)).status, 401);
+    assert.equal((await key('clear', 'wrong')).status, 401);
+    assert.equal((await key('clear', config.deviceToken)).status, 401);
+    const withCookie = await fetch(`${base}/api/keys/clear`, { method: 'POST', headers: { Cookie: cookie } });
+    assert.equal(withCookie.status, 401);
+    assert.equal((await key('clear', config.apiToken, '198.51.100.1', 'GET')).status, 405);
+});
+
+test('a preset key toggles its message on and off', async () => {
+    const { data } = await call('POST', '/api/presets', { name: 'Key test', text: 'On air', color: '#ff1e1e', icon: 'mic', minutes: 30 });
+    const id = data.preset.id;
+
+    const on = await key(`presets/${id}/toggle`);
+    assert.deepEqual([on.status, on.data.action, on.data.showing.text], [200, 'sent', 'On air']);
+    const off = await key(`presets/${id}/toggle`);
+    assert.deepEqual([off.data.action, off.data.showing.mode], ['cleared', 'clock']);
+
+    await key(`presets/${id}/send`);
+    const again = await key(`presets/${id}/send`);                 // send never clears
+    assert.equal(again.data.showing.text, 'On air');
+    assert.equal((await key('clear')).data.showing.mode, 'clock');
+    assert.equal((await key('presets/999/toggle')).status, 404);
+    await call('DELETE', `/api/presets/${id}`);
+});
+
+test('the dark keys switch the display', async () => {
+    assert.equal((await key('dark/toggle')).data.showing.mode, 'dark');
+    assert.equal((await key('dark/toggle')).data.showing.mode, 'clock');
+    assert.equal((await key('dark/on')).data.action, 'display off');
+    assert.equal((await key('dark/off')).data.showing.mode, 'clock');
+    assert.equal((await key('dark/sideways')).status, 404);
+    assert.equal((await key('clear?sign=nope')).status, 404);
+});
+
+test('repeated wrong key tokens lock that address out', async () => {
+    for (let i = 0; i < 10; i++) await key('clear', 'wrong', '198.51.100.7');
+    assert.equal((await key('clear', config.apiToken, '198.51.100.7')).status, 429);
+    assert.equal((await key('clear', config.apiToken, '198.51.100.8')).status, 200);
+});
+
+test('keys are switched off when no API token is configured', async () => {
+    const off = http.createServer(createApp({ config: { ...config, apiToken: '' }, db, signs }));
+    await new Promise((resolve) => off.listen(0, '127.0.0.1', resolve));
+    const response = await fetch(`http://127.0.0.1:${off.address().port}/api/keys/clear`, {
+        method: 'POST', headers: { Authorization: 'Bearer ' },
+    });
+    assert.equal(response.status, 404);
+    off.close();
 });

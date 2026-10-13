@@ -8,7 +8,7 @@ import { createSignService } from './src/signs.js';
 const config = validateConfig();
 const db = openDatabase(config.dataDir);
 const hub = createDeviceHub({ config, db });
-const signs = createSignService({ db, hub });
+const signs = createSignService({ db, hub, timezone: config.timezone });
 signs.start();
 const server = http.createServer(createApp({ config, db, signs, hub }));
 

@@ -5,6 +5,8 @@
 // is what gets sent to the sign). resolve() turns the first into the
 // second.
 
+import { activeSchedule } from './schedule.js';
+
 // Must match the icon names in the firmware's icons.h.
 export const ICONS = [
     'check', 'x', 'heart', 'bell', 'phone', 'coffee',
@@ -20,7 +22,9 @@ export const DEFAULT_SETTINGS = Object.freeze({
     // Shown when nothing else is active.
     default: Object.freeze({ mode: 'clock', text: '', color: DEFAULT_COLOR, icon: null }),
     // A message sent from the dashboard, or null. expiresAt is an ISO
-    // timestamp, or null to stay until cleared by hand.
+    // timestamp, or null to stay until cleared by hand. sentAt is when
+    // it was sent. yieldToSchedule lets a scheduled message that starts
+    // later take over.
     custom: null,
     // The off switch. Overrides everything while true.
     dark: false,
@@ -46,20 +50,51 @@ function checkMessageFields(input, { textRequired }) {
     return { ok: true, fields: { text: text.trim(), color: color.toLowerCase(), icon } };
 }
 
-// A message sent from the dashboard: { text, color, icon, expiresAt }.
+// A message sent from the dashboard:
+// { text, color, icon, expiresAt, yieldToSchedule }.
 export function validateCustom(input, now = Date.now()) {
     if (!isPlainObject(input)) return fail('Message must be an object.');
     const checked = checkMessageFields(input, { textRequired: true });
     if (!checked.ok) return checked;
 
-    const { expiresAt = null } = input;
+    const { expiresAt = null, yieldToSchedule = false } = input;
+    if (typeof yieldToSchedule !== 'boolean') return fail('yieldToSchedule must be true or false.');
+    const custom = { ...checked.fields, expiresAt: null, yieldToSchedule, sentAt: new Date(now).toISOString() };
     if (expiresAt !== null) {
         const time = typeof expiresAt === 'string' ? Date.parse(expiresAt) : NaN;
         if (Number.isNaN(time)) return fail('The clear time is not a valid date.');
         if (time <= now) return fail('The clear time must be in the future.');
-        return { ok: true, custom: { ...checked.fields, expiresAt: new Date(time).toISOString() } };
+        custom.expiresAt = new Date(time).toISOString();
     }
-    return { ok: true, custom: { ...checked.fields, expiresAt: null } };
+    return { ok: true, custom };
+}
+
+// A scheduled message:
+// { text, color, icon, kind, days, date, start, end, enabled }.
+export function validateSchedule(input) {
+    if (!isPlainObject(input)) return fail('Schedule must be an object.');
+    const checked = checkMessageFields(input, { textRequired: true });
+    if (!checked.ok) return checked;
+
+    const { kind, days = [], date = null, start, end, enabled = true } = input;
+    const isTime = (value) => typeof value === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
+    if (!isTime(start) || !isTime(end)) return fail('Start and end must be times like 09:00.');
+    if (typeof enabled !== 'boolean') return fail('enabled must be true or false.');
+
+    if (kind === 'weekly') {
+        const valid = Array.isArray(days) && days.length > 0
+            && days.every((day) => Number.isInteger(day) && day >= 0 && day <= 6);
+        if (!valid) return fail('Choose at least one day of the week.');
+        const unique = [...new Set(days)].sort((a, b) => a - b);
+        return { ok: true, schedule: { ...checked.fields, kind, days: unique, date: null, start, end, enabled } };
+    }
+    if (kind === 'once') {
+        const validDate = typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date)
+            && !Number.isNaN(Date.parse(`${date}T00:00:00Z`));
+        if (!validDate) return fail('Choose a date.');
+        return { ok: true, schedule: { ...checked.fields, kind, days: [], date, start, end, enabled } };
+    }
+    return fail('A schedule must repeat weekly or happen once.');
 }
 
 // The default: { mode: 'clock' | 'message', text, color, icon }.
@@ -98,21 +133,46 @@ export function customIsActive(custom, now = Date.now()) {
     return custom.expiresAt === null || Date.parse(custom.expiresAt) > now;
 }
 
-// Decides what a sign shows right now. Highest priority first:
+// Decides what a sign shows right now, and why. Highest priority first:
 //   1. the dark switch
 //   2. an active custom message
-//   3. (scheduled messages will go here in Phase 7)
+//   3. an active scheduled message
 //   4. the default
-export function resolve(settings, now = Date.now()) {
+// One exception: a custom message sent with yieldToSchedule gives way
+// to a schedule that starts after the message was sent.
+//
+// Returns { state, source, scheduleId }. state is what the sign is
+// sent; source says which layer it came from.
+export function resolveWithSource(settings, now = Date.now(), { schedules = [], timezone = 'UTC' } = {}) {
     const { brightness } = settings;
+    const show = (source, fields, scheduleId = null) => ({
+        state: { mode: 'message', text: fields.text, color: fields.color, icon: fields.icon, brightness },
+        source,
+        scheduleId,
+    });
+
     if (settings.dark) {
-        return { mode: 'dark', text: '', color: DEFAULT_COLOR, icon: null, brightness };
+        return { state: { mode: 'dark', text: '', color: DEFAULT_COLOR, icon: null, brightness }, source: 'dark', scheduleId: null };
     }
-    if (customIsActive(settings.custom, now)) {
-        const { text, color, icon } = settings.custom;
-        return { mode: 'message', text, color, icon, brightness };
+
+    const custom = customIsActive(settings.custom, now) ? settings.custom : null;
+    const scheduled = activeSchedule(schedules, now, timezone);
+
+    if (custom) {
+        const interrupted = custom.yieldToSchedule && scheduled
+            && scheduled.startedAt > Date.parse(custom.sentAt || 0);
+        if (!interrupted) return show('custom', custom);
     }
-    const { mode, text, color, icon } = settings.default;
-    if (mode === 'message') return { mode: 'message', text, color, icon, brightness };
-    return { mode: 'clock', text: '', color, icon: null, brightness };
+    if (scheduled) return show('schedule', scheduled.schedule, scheduled.schedule.id);
+
+    if (settings.default.mode === 'message') return show('default', settings.default);
+    return {
+        state: { mode: 'clock', text: '', color: settings.default.color, icon: null, brightness },
+        source: 'default',
+        scheduleId: null,
+    };
+}
+
+export function resolve(settings, now = Date.now(), options = {}) {
+    return resolveWithSource(settings, now, options).state;
 }

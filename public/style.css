@@ -155,3 +155,24 @@ details.card > summary h2 { margin: 0; }
 details.card[open] > summary { margin-bottom: 12px; }
 
 @media (prefers-reduced-motion: reduce) { .switch::after { transition: none; } }
+
+h3 { font-size: 0.95rem; margin: 0 0 12px; }
+.subform { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
+.check { display: flex; align-items: center; gap: 10px; margin-top: 16px; min-height: 44px; color: var(--text); font-size: 1rem; cursor: pointer; }
+.check input { width: 20px; height: 20px; accent-color: var(--accent); flex: none; margin: 0; }
+.times > div { flex: 1 1 130px; }
+.times input { width: 100%; }
+input[type="date"] { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; min-height: 44px; }
+.choice input[type="checkbox"] { position: absolute; opacity: 0; }
+.presets .info { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; padding: 4px 0; }
+.presets .info .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.presets .info .meta { color: var(--muted); font-size: 0.8rem; }
+.presets li.off .info { opacity: 0.55; }
+.presets li { align-items: center; }
+.keys { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 10px; }
+.keys li { display: grid; gap: 4px; }
+.keys .label { font-weight: 600; }
+.keys .line { display: flex; gap: 8px; align-items: center; }
+.keys code, code { font: 0.8rem ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; overflow-wrap: anywhere; flex: 1; min-width: 0; }
+p code { padding: 1px 5px; }
+.card p { margin: 0 0 8px; }

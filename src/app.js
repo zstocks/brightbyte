@@ -9,7 +9,7 @@ import {
     safeEqual, sessionCookie, verifySession,
 } from './auth.js';
 import {
-    ICONS, validateBrightness, validateCustom, validateDefault, validatePreset,
+    ICONS, validateBrightness, validateCustom, validateDefault, validatePreset, validateSchedule,
 } from './state.js';
 
 const APP_NAME = 'brightbyte';
@@ -55,6 +55,7 @@ const redirect = (res, location, headers = {}) =>
 // devices.js, optional so the HTTP side can be tested without it.
 export function createApp({ config, db, signs, hub = null }) {
     const limiter = createLoginLimiter();
+    const keyLimiter = createLoginLimiter({ maxFailures: 10 });
     const page = (name) => readFileSync(join(PUBLIC_DIR, name), 'utf8');
     const loginPage = page('login.html');
     const dashboardPage = page('index.html');
@@ -120,6 +121,45 @@ export function createApp({ config, db, signs, hub = null }) {
                 return redirect(res, '/login', { 'Set-Cookie': cookie });
             }
 
+            // ----- Keys: for a Stream Deck or a script -----
+            // These use "Authorization: Bearer <API_TOKEN>" in place of
+            // the login cookie. They are off unless API_TOKEN is set.
+            if (path.startsWith('/api/keys/')) {
+                if (!config.apiToken) return sendJson(res, 404, { error: 'Not found.' });
+                if (method !== 'POST') return sendJson(res, 405, { error: 'Use POST.' });
+                const ip = clientIp(req);
+                if (keyLimiter.isLocked(ip)) return sendJson(res, 429, { error: 'Too many failed attempts. Try again later.' });
+                const header = req.headers.authorization || '';
+                const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+                if (!safeEqual(token, config.apiToken)) {
+                    keyLimiter.recordFailure(ip);
+                    return sendJson(res, 401, { error: 'Missing or wrong token.' });
+                }
+
+                const signId = url.searchParams.get('sign') || db.listSigns()[0]?.id;
+                const sign = signId ? db.getSign(signId) : null;
+                if (!sign) return sendJson(res, 404, { error: 'No sign with that ID.' });
+                const done = (updated, action) => sendJson(res, 200, { ok: true, action, showing: updated.state });
+
+                const presetKey = path.match(/^\/api\/keys\/presets\/(\d{1,9})\/(send|toggle)$/);
+                if (presetKey) {
+                    const preset = db.getPreset(Number(presetKey[1]));
+                    if (!preset) return sendJson(res, 404, { error: 'No preset with that ID.' });
+                    // toggle: pressing the key again takes the message down.
+                    if (presetKey[2] === 'toggle' && signs.isShowingPreset(sign.id, preset)) {
+                        return done(signs.clearCustom(sign.id), 'cleared');
+                    }
+                    return done(signs.sendPreset(sign.id, preset), 'sent');
+                }
+                if (path === '/api/keys/clear') return done(signs.clearCustom(sign.id), 'cleared');
+                const darkKey = path.match(/^\/api\/keys\/dark\/(on|off|toggle)$/);
+                if (darkKey) {
+                    const dark = darkKey[1] === 'toggle' ? !sign.settings.dark : darkKey[1] === 'on';
+                    return done(signs.setDark(sign.id, dark), dark ? 'display off' : 'display on');
+                }
+                return sendJson(res, 404, { error: 'Not found.' });
+            }
+
             // ----- Everything below requires a login -----
             if (!isLoggedIn(req)) {
                 if (path.startsWith('/api/')) return sendJson(res, 401, { error: 'Not logged in.' });
@@ -129,13 +169,13 @@ export function createApp({ config, db, signs, hub = null }) {
             if (isRead && path === '/') {
                 return send(res, 200, 'text/html; charset=utf-8', dashboardPage);
             }
-            const withOnline = (sign) => ({ ...sign, online: hub ? hub.isOnline(sign.id) : false });
-
             if (isRead && path === '/api/signs') {
                 return sendJson(res, 200, {
-                    signs: db.listSigns().map(withOnline),
+                    signs: db.listSigns().map((sign) => signs.view(sign)),
                     presets: db.listPresets(),
                     icons: ICONS,
+                    timezone: config.timezone,
+                    keysEnabled: Boolean(config.apiToken),
                 });
             }
 
@@ -152,7 +192,7 @@ export function createApp({ config, db, signs, hub = null }) {
                     }
                 }
                 const changed = (sign) => (sign
-                    ? sendJson(res, 200, { sign: withOnline(sign) })
+                    ? sendJson(res, 200, { sign: signs.view(sign) })
                     : sendJson(res, 404, { error: 'No sign with that ID.' }));
 
                 const signRoute = path.match(/^\/api\/signs\/([a-z0-9-]{1,40})\/(custom|default|dark|brightness)$/);
@@ -180,6 +220,29 @@ export function createApp({ config, db, signs, hub = null }) {
                         if (!result.ok) return sendJson(res, 400, { error: result.error });
                         return changed(signs.setBrightness(signId, result.brightness));
                     }
+                }
+
+                const newSchedule = path.match(/^\/api\/signs\/([a-z0-9-]{1,40})\/schedules$/);
+                if (newSchedule && method === 'POST') {
+                    const result = validateSchedule(body);
+                    if (!result.ok) return sendJson(res, 400, { error: result.error });
+                    const schedule = signs.createSchedule(newSchedule[1], result.schedule);
+                    if (!schedule) return sendJson(res, 404, { error: 'No sign with that ID.' });
+                    return sendJson(res, 201, { sign: signs.view(db.getSign(schedule.signId)) });
+                }
+                const scheduleRoute = path.match(/^\/api\/schedules\/(\d{1,9})$/);
+                if (scheduleRoute && method === 'PUT') {
+                    const result = validateSchedule(body);
+                    if (!result.ok) return sendJson(res, 400, { error: result.error });
+                    const schedule = signs.updateSchedule(Number(scheduleRoute[1]), result.schedule);
+                    if (!schedule) return sendJson(res, 404, { error: 'No schedule with that ID.' });
+                    return sendJson(res, 200, { sign: signs.view(db.getSign(schedule.signId)) });
+                }
+                if (scheduleRoute && method === 'DELETE') {
+                    const existing = db.getSchedule(Number(scheduleRoute[1]));
+                    if (!existing) return sendJson(res, 404, { error: 'No schedule with that ID.' });
+                    signs.deleteSchedule(existing.id);
+                    return sendJson(res, 200, { sign: signs.view(db.getSign(existing.signId)) });
                 }
 
                 if (path === '/api/presets' && method === 'POST') {

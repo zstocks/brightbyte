@@ -72,6 +72,11 @@
                     <input id="clear-time" type="time" aria-label="Clear at" hidden>
                 </div>
 
+                <label class="check">
+                    <input type="checkbox" id="yield">
+                    <span>Let a scheduled message take over if one starts</span>
+                </label>
+
                 <button type="submit" class="primary">Send to sign</button>
             </form>
 
@@ -84,6 +89,61 @@
                 </div>
             </div>
         </section>
+
+        <details class="card" id="schedule-card">
+            <summary><h2>Scheduled messages</h2><span id="schedule-summary" class="hint"></span></summary>
+            <ul id="schedules" class="presets"></ul>
+            <p class="hint" id="schedule-hint"></p>
+
+            <form id="schedule-form" class="subform">
+                <h3 id="schedule-form-title">Add a scheduled message</h3>
+                <label for="stext">Message</label>
+                <input id="stext" type="text" maxlength="200" autocomplete="off" required>
+
+                <fieldset>
+                    <legend>Color</legend>
+                    <div class="choices" id="scolors"></div>
+                </fieldset>
+                <fieldset>
+                    <legend>Icon</legend>
+                    <div class="choices" id="sicons"></div>
+                </fieldset>
+
+                <label for="skind" class="spaced">Repeat</label>
+                <select id="skind">
+                    <option value="weekly">Every week on chosen days</option>
+                    <option value="once">Once, on a date</option>
+                </select>
+
+                <fieldset id="sdays-field">
+                    <legend>Days</legend>
+                    <div class="choices" id="sdays"></div>
+                </fieldset>
+                <div id="sdate-field" hidden>
+                    <label for="sdate" class="spaced">Date</label>
+                    <input id="sdate" type="date">
+                </div>
+
+                <div class="row times">
+                    <div>
+                        <label for="sstart" class="spaced">Starts</label>
+                        <input id="sstart" type="time" required>
+                    </div>
+                    <div>
+                        <label for="send" class="spaced">Ends</label>
+                        <input id="send" type="time" required>
+                    </div>
+                </div>
+
+                <button type="submit" class="primary" id="save-schedule">Add to schedule</button>
+                <button type="button" id="cancel-schedule" class="quiet" hidden>Cancel</button>
+            </form>
+        </details>
+
+        <details class="card">
+            <summary><h2>Stream Deck keys</h2></summary>
+            <div id="keys"></div>
+        </details>
 
         <details class="card">
             <summary><h2>When nothing else is showing</h2><span id="default-summary" class="hint"></span></summary>

@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-    DEFAULT_SETTINGS, MAX_TEXT_LENGTH, resolve,
-    validateBrightness, validateCustom, validateDefault, validatePreset,
+    DEFAULT_SETTINGS, MAX_TEXT_LENGTH, resolve, resolveWithSource,
+    validateBrightness, validateCustom, validateDefault, validatePreset, validateSchedule,
 } from '../src/state.js';
 
 const NOW = Date.parse('2026-10-12T12:00:00Z');
@@ -44,8 +44,12 @@ test('brightness is always passed through', () => {
 test('validateCustom accepts and normalizes a message', () => {
     assert.deepEqual(validateCustom({ text: '  Busy ', color: '#FF1E1E', icon: 'dnd' }, NOW), {
         ok: true,
-        custom: { text: 'Busy', color: '#ff1e1e', icon: 'dnd', expiresAt: null },
+        custom: {
+            text: 'Busy', color: '#ff1e1e', icon: 'dnd', expiresAt: null,
+            yieldToSchedule: false, sentAt: new Date(NOW).toISOString(),
+        },
     });
+    assert.equal(validateCustom({ text: 'Hi', yieldToSchedule: true }, NOW).custom.yieldToSchedule, true);
     assert.equal(validateCustom(message({ expiresAt: later(5) }), NOW).custom.expiresAt, later(5));
 });
 
@@ -59,6 +63,7 @@ test('validateCustom rejects bad input', () => {
         { text: 'hi', icon: 'unicorn' },
         { text: 'hi', expiresAt: 'soon' }, { text: 'hi', expiresAt: 12345 },
         { text: 'hi', expiresAt: later(-5) },
+        { text: 'hi', yieldToSchedule: 'yes' },
     ];
     for (const input of bad) {
         const result = validateCustom(input, NOW);
@@ -94,4 +99,72 @@ test('validatePreset checks the name and duration', () => {
     ]) {
         assert.equal(validatePreset({ ...base, ...changes }).ok, false, JSON.stringify(changes));
     }
+});
+
+// ----- Schedules in the priority order -----
+// NOW is Monday 2026-10-12 12:00 UTC, which is 06:00 in Denver.
+
+const TZ = { timezone: 'America/Denver' };
+const scheduled = (changes = {}) => ({
+    id: 1, text: 'Standup', color: '#00dc3c', icon: 'mic',
+    kind: 'weekly', days: [1], date: null, start: '05:30', end: '07:00', enabled: true, ...changes,
+});
+const withSchedules = (list) => ({ ...TZ, schedules: list });
+
+test('an active schedule beats the default', () => {
+    const result = resolveWithSource(settings(), NOW, withSchedules([scheduled()]));
+    assert.equal(result.source, 'schedule');
+    assert.equal(result.scheduleId, 1);
+    assert.equal(result.state.text, 'Standup');
+});
+
+test('a custom message beats a schedule by default', () => {
+    const custom = message({ sentAt: later(-60) });
+    const result = resolveWithSource(settings({ custom }), NOW, withSchedules([scheduled()]));
+    assert.equal(result.source, 'custom');
+});
+
+test('a yielding message gives way to a schedule that starts after it was sent', () => {
+    const custom = message({ yieldToSchedule: true, sentAt: later(-60) });   // sent 05:00, schedule began 05:30
+    const result = resolveWithSource(settings({ custom }), NOW, withSchedules([scheduled()]));
+    assert.equal(result.source, 'schedule');
+});
+
+test('a yielding message stays up over a schedule that was already running', () => {
+    const custom = message({ yieldToSchedule: true, sentAt: later(-10) });   // sent 05:50, schedule began 05:30
+    const result = resolveWithSource(settings({ custom }), NOW, withSchedules([scheduled()]));
+    assert.equal(result.source, 'custom');
+});
+
+test('a yielding message returns when the schedule ends', () => {
+    const custom = message({ yieldToSchedule: true, sentAt: later(-60) });
+    const afterEnd = NOW + 61 * 60000;                                       // 07:01
+    assert.equal(resolveWithSource(settings({ custom }), afterEnd, withSchedules([scheduled()])).source, 'custom');
+});
+
+test('the dark switch beats a schedule', () => {
+    assert.equal(resolve(settings({ dark: true }), NOW, withSchedules([scheduled()])).mode, 'dark');
+});
+
+test('validateSchedule accepts weekly and one-time schedules', () => {
+    const base = { text: ' Standup ', color: '#00DC3C', icon: 'mic', start: '09:00', end: '09:15' };
+    assert.deepEqual(validateSchedule({ ...base, kind: 'weekly', days: [5, 1, 1, 3] }), {
+        ok: true,
+        schedule: { text: 'Standup', color: '#00dc3c', icon: 'mic', kind: 'weekly', days: [1, 3, 5], date: null, start: '09:00', end: '09:15', enabled: true },
+    });
+    const once = validateSchedule({ ...base, kind: 'once', date: '2026-10-20', enabled: false });
+    assert.equal(once.ok, true);
+    assert.deepEqual([once.schedule.days, once.schedule.date, once.schedule.enabled], [[], '2026-10-20', false]);
+});
+
+test('validateSchedule rejects bad input', () => {
+    const base = { text: 'Standup', kind: 'weekly', days: [1], start: '09:00', end: '09:15' };
+    for (const changes of [
+        { text: '' }, { kind: 'daily' }, { days: [] }, { days: [7] }, { days: [1.5] }, { days: 'mon' },
+        { start: '9:00' }, { start: '24:00' }, { end: '09:60' }, { end: null }, { enabled: 'yes' },
+        { kind: 'once' }, { kind: 'once', date: '10/20/2026' }, { kind: 'once', date: '2026-13-45' },
+    ]) {
+        assert.equal(validateSchedule({ ...base, ...changes }).ok, false, JSON.stringify(changes));
+    }
+    assert.equal(validateSchedule(null).ok, false);
 });

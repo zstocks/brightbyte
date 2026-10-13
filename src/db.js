@@ -42,6 +42,19 @@ export function openDatabase(dataDir) {
             icon    TEXT,
             minutes INTEGER
         );
+        CREATE TABLE IF NOT EXISTS schedules (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            sign_id    TEXT NOT NULL REFERENCES signs(id),
+            text       TEXT NOT NULL,
+            color      TEXT NOT NULL,
+            icon       TEXT,
+            kind       TEXT NOT NULL,
+            days       TEXT NOT NULL,
+            date       TEXT,
+            start_time TEXT NOT NULL,
+            end_time   TEXT NOT NULL,
+            enabled    INTEGER NOT NULL
+        );
     `);
 
     // Migration: add the settings column to databases from Phase 4/5.
@@ -70,6 +83,38 @@ export function openDatabase(dataDir) {
         'UPDATE presets SET name = @name, text = @text, color = @color, icon = @icon, minutes = @minutes WHERE id = @id'
     );
     const deletePreset = db.prepare('DELETE FROM presets WHERE id = ?');
+
+    const selectSchedules = db.prepare('SELECT * FROM schedules WHERE sign_id = ? ORDER BY start_time, id');
+    const selectSchedule = db.prepare('SELECT * FROM schedules WHERE id = ?');
+    const insertSchedule = db.prepare(`
+        INSERT INTO schedules (sign_id, text, color, icon, kind, days, date, start_time, end_time, enabled)
+        VALUES (@signId, @text, @color, @icon, @kind, @days, @date, @start, @end, @enabled)
+    `);
+    const updateSchedule = db.prepare(`
+        UPDATE schedules SET text = @text, color = @color, icon = @icon, kind = @kind, days = @days,
+            date = @date, start_time = @start, end_time = @end, enabled = @enabled
+        WHERE id = @id
+    `);
+    const deleteSchedule = db.prepare('DELETE FROM schedules WHERE id = ?');
+
+    const toSchedule = (row) => ({
+        id: row.id,
+        signId: row.sign_id,
+        text: row.text,
+        color: row.color,
+        icon: row.icon,
+        kind: row.kind,
+        days: JSON.parse(row.days),
+        date: row.date,
+        start: row.start_time,
+        end: row.end_time,
+        enabled: row.enabled === 1,
+    });
+    const scheduleParams = (schedule) => ({
+        ...schedule,
+        days: JSON.stringify(schedule.days),
+        enabled: schedule.enabled ? 1 : 0,
+    });
 
     // state is the display state last sent to the sign; settings are
     // the layers it was worked out from.
@@ -115,6 +160,23 @@ export function openDatabase(dataDir) {
         },
         deletePreset(id) {
             return deletePreset.run(id).changes > 0;
+        },
+
+        listSchedules(signId) {
+            return selectSchedules.all(signId).map(toSchedule);
+        },
+        getSchedule(id) {
+            const row = selectSchedule.get(id);
+            return row ? toSchedule(row) : null;
+        },
+        createSchedule(signId, schedule) {
+            return this.getSchedule(insertSchedule.run({ ...scheduleParams(schedule), signId }).lastInsertRowid);
+        },
+        updateSchedule(id, schedule) {
+            return updateSchedule.run({ ...scheduleParams(schedule), id }).changes > 0 ? this.getSchedule(id) : null;
+        },
+        deleteSchedule(id) {
+            return deleteSchedule.run(id).changes > 0;
         },
 
         close() {

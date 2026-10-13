@@ -13,6 +13,10 @@ const el = (id) => document.getElementById(id);
 let sign = null;       // the sign being controlled; one for now
 let presets = [];
 let editingId = null;  // the preset being edited, if any
+let editingScheduleId = null;
+let timezone = '';
+let keysEnabled = false;
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 // ---------- Small helpers ----------
 
@@ -108,22 +112,29 @@ function customIsActive() {
 function showExpiry() {
     const custom = sign.settings.custom;
     const active = customIsActive();
+    const lines = [];
     el('clear-now').hidden = !active;
-    if (!active) {
-        el('expiry').textContent = '';
-    } else if (custom.expiresAt === null) {
-        el('expiry').textContent = 'Stays until you clear it.';
-    } else {
-        el('expiry').textContent = `Clears in ${formatRemaining(Date.parse(custom.expiresAt) - Date.now())}.`;
+
+    if (sign.source === 'schedule') {
+        const schedule = sign.schedules.find((item) => item.id === sign.scheduleId);
+        if (schedule) lines.push(`Scheduled until ${formatTime(schedule.end)}.`);
     }
-    if (active && sign.settings.dark) {
-        el('expiry').textContent += ` Hidden while the display is off: "${custom.text}".`;
+    if (active) {
+        const hidden = sign.source !== 'custom';
+        const what = hidden ? `Your message "${custom.text}"` : 'It';
+        if (custom.expiresAt === null) {
+            lines.push(hidden ? `${what} is waiting behind this and stays until you clear it.` : 'Stays until you clear it.');
+        } else {
+            const remaining = formatRemaining(Date.parse(custom.expiresAt) - Date.now());
+            lines.push(hidden ? `${what} is waiting behind this and clears in ${remaining}.` : `Clears in ${remaining}.`);
+        }
     }
+    el('expiry').textContent = lines.join(' ');
 }
 
 function showSign() {
     el('sign-name').textContent = sign.name;
-    el('now-showing').textContent = describe(sign.state);
+    el('now-showing').textContent = describe(sign.state) + (sign.source === 'schedule' ? ' (scheduled)' : '');
     el('online').textContent = sign.online ? 'Sign online' : 'Sign offline';
     el('online').className = `badge ${sign.online ? 'online' : 'offline'}`;
     el('dark').checked = sign.settings.dark;
@@ -135,6 +146,7 @@ function showSign() {
     const fallback = sign.settings.default;
     el('default-summary').textContent = fallback.mode === 'clock' ? 'Clock' : `"${fallback.text}"`;
     showExpiry();
+    showSchedules();
 }
 
 function updated(data, message) {
@@ -256,6 +268,7 @@ async function savePreset() {
     presets = presets.filter((item) => item.id !== data.preset.id).concat(data.preset);
     presets.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
     showPresets();
+    showKeys();
     setStatus(`Saved preset "${data.preset.name}".`);
     stopEditing();
 }
@@ -266,6 +279,7 @@ async function deletePreset(preset) {
     if (!data) return;
     presets = presets.filter((item) => item.id !== preset.id);
     showPresets();
+    showKeys();
     if (editingId === preset.id) stopEditing();
     setStatus(`Deleted preset "${preset.name}".`);
 }
@@ -308,6 +322,7 @@ el('message-form').addEventListener('submit', async (event) => {
         color: selected('color'),
         icon: selected('icon') || null,
         expiresAt: expiry.expiresAt,
+        yieldToSchedule: el('yield').checked,
     });
     updated(data, 'Sent to the sign.');
 });
@@ -319,6 +334,201 @@ el('cancel-edit').addEventListener('click', stopEditing);
 el('clear-now').addEventListener('click', async () => {
     updated(await api('DELETE', `/api/signs/${sign.id}/custom`), 'Message cleared.');
 });
+
+// ---------- Scheduled messages ----------
+
+// "09:00" -> "9:00 AM"
+function formatTime(time) {
+    const [hours, minutes] = time.split(':').map(Number);
+    const hour12 = hours % 12 === 0 ? 12 : hours % 12;
+    return `${hour12}:${String(minutes).padStart(2, '0')} ${hours < 12 ? 'AM' : 'PM'}`;
+}
+
+function formatDays(days) {
+    const key = days.join(',');
+    if (key === '0,1,2,3,4,5,6') return 'Every day';
+    if (key === '1,2,3,4,5') return 'Weekdays';
+    if (key === '0,6') return 'Weekends';
+    return days.map((day) => DAY_NAMES[day]).join(', ');
+}
+
+function describeSchedule(schedule) {
+    const when = schedule.kind === 'once'
+        ? new Date(`${schedule.date}T12:00:00`).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+        : formatDays(schedule.days);
+    const overnight = schedule.end <= schedule.start ? ' (next day)' : '';
+    return `${when}, ${formatTime(schedule.start)} to ${formatTime(schedule.end)}${overnight}`;
+}
+
+function showSchedules() {
+    const list = el('schedules');
+    list.replaceChildren();
+    const count = sign.schedules.length;
+    el('schedule-summary').textContent = count === 0 ? 'None' : `${count} saved`;
+    el('schedule-hint').textContent = count === 0
+        ? `Nothing scheduled yet. Times use ${timezone} time.`
+        : `Times use ${timezone} time. If two overlap, the one that started most recently shows.`;
+
+    for (const schedule of sign.schedules) {
+        const item = document.createElement('li');
+        if (!schedule.enabled) item.className = 'off';
+
+        const swatch = document.createElement('i');
+        swatch.className = 'swatch';
+        swatch.style.background = schedule.color;
+        const info = document.createElement('div');
+        info.className = 'info';
+        const name = document.createElement('span');
+        name.className = 'name';
+        name.textContent = schedule.text;
+        const meta = document.createElement('span');
+        meta.className = 'meta';
+        meta.textContent = describeSchedule(schedule);
+        info.append(name, meta);
+
+        const toggle = document.createElement('input');
+        toggle.type = 'checkbox';
+        toggle.className = 'switch';
+        toggle.setAttribute('role', 'switch');
+        toggle.checked = schedule.enabled;
+        toggle.setAttribute('aria-label', `Scheduled message ${schedule.text} is on`);
+        toggle.addEventListener('change', async () => {
+            const data = await api('PUT', `/api/schedules/${schedule.id}`, { ...schedule, enabled: toggle.checked });
+            if (!updated(data, toggle.checked ? 'Schedule turned on.' : 'Schedule turned off.')) toggle.checked = schedule.enabled;
+        });
+
+        const edit = document.createElement('button');
+        edit.type = 'button';
+        edit.textContent = 'Edit';
+        edit.setAttribute('aria-label', `Edit scheduled message ${schedule.text}`);
+        edit.addEventListener('click', () => startEditingSchedule(schedule));
+
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.textContent = 'Delete';
+        remove.setAttribute('aria-label', `Delete scheduled message ${schedule.text}`);
+        remove.addEventListener('click', async () => {
+            if (!window.confirm(`Delete the scheduled message "${schedule.text}"?`)) return;
+            if (updated(await api('DELETE', `/api/schedules/${schedule.id}`), 'Scheduled message deleted.')
+                && editingScheduleId === schedule.id) stopEditingSchedule();
+        });
+
+        item.append(swatch, info, toggle, edit, remove);
+        list.append(item);
+    }
+}
+
+function showScheduleKind() {
+    const weekly = el('skind').value === 'weekly';
+    el('sdays-field').hidden = !weekly;
+    el('sdate-field').hidden = weekly;
+}
+
+function startEditingSchedule(schedule) {
+    editingScheduleId = schedule.id;
+    el('stext').value = schedule.text;
+    select('scolor', schedule.color);
+    select('sicon', schedule.icon || '');
+    el('skind').value = schedule.kind;
+    document.querySelectorAll('input[name="sday"]').forEach((input) => {
+        input.checked = schedule.days.includes(Number(input.value));
+    });
+    el('sdate').value = schedule.date || '';
+    el('sstart').value = schedule.start;
+    el('send').value = schedule.end;
+    showScheduleKind();
+    el('schedule-form-title').textContent = 'Edit scheduled message';
+    el('save-schedule').textContent = 'Save changes';
+    el('cancel-schedule').hidden = false;
+    el('stext').focus();
+}
+
+function stopEditingSchedule() {
+    editingScheduleId = null;
+    el('schedule-form').reset();
+    select('scolor', COLORS[0][1]);
+    select('sicon', '');
+    showScheduleKind();
+    el('schedule-form-title').textContent = 'Add a scheduled message';
+    el('save-schedule').textContent = 'Add to schedule';
+    el('cancel-schedule').hidden = true;
+}
+
+el('skind').addEventListener('change', showScheduleKind);
+el('cancel-schedule').addEventListener('click', stopEditingSchedule);
+
+el('schedule-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const existing = sign.schedules.find((item) => item.id === editingScheduleId);
+    const schedule = {
+        text: el('stext').value,
+        color: selected('scolor'),
+        icon: selected('sicon') || null,
+        kind: el('skind').value,
+        days: [...document.querySelectorAll('input[name="sday"]:checked')].map((input) => Number(input.value)),
+        date: el('sdate').value || null,
+        start: el('sstart').value,
+        end: el('send').value,
+        enabled: existing ? existing.enabled : true,
+    };
+    const data = editingScheduleId === null
+        ? await api('POST', `/api/signs/${sign.id}/schedules`, schedule)
+        : await api('PUT', `/api/schedules/${editingScheduleId}`, schedule);
+    if (updated(data, 'Schedule saved.')) stopEditingSchedule();
+});
+
+// ---------- Stream Deck keys ----------
+
+function showKeys() {
+    const box = el('keys');
+    box.replaceChildren();
+    const paragraph = (text) => {
+        const p = document.createElement('p');
+        p.className = 'hint';
+        p.textContent = text;
+        box.append(p);
+    };
+    if (!keysEnabled) {
+        paragraph('Keys are switched off. To turn them on, add API_TOKEN to the .env file on the server and redeploy.');
+        return;
+    }
+    paragraph('Each key sends a POST request to its address, with the header "Authorization: Bearer" followed by a space and your API_TOKEN. Preset keys work as toggles: press again to take the message down.');
+
+    const base = `${window.location.origin}/api/keys`;
+    const keys = [
+        ['Clear message', `${base}/clear`],
+        ['Display off / on', `${base}/dark/toggle`],
+        ...presets.map((preset) => [`Preset: ${preset.name}`, `${base}/presets/${preset.id}/toggle`]),
+    ];
+    const list = document.createElement('ul');
+    list.className = 'keys';
+    for (const [label, address] of keys) {
+        const item = document.createElement('li');
+        const title = document.createElement('span');
+        title.className = 'label';
+        title.textContent = label;
+        const line = document.createElement('div');
+        line.className = 'line';
+        const code = document.createElement('code');
+        code.textContent = address;
+        const copy = document.createElement('button');
+        copy.type = 'button';
+        copy.textContent = 'Copy';
+        copy.setAttribute('aria-label', `Copy address for ${label}`);
+        copy.addEventListener('click', async () => {
+            try {
+                await navigator.clipboard.writeText(address);
+                setStatus(`Copied the address for "${label}".`);
+            } catch {
+                setStatus('Could not copy. Select the address and copy it by hand.', true);
+            }
+        });
+        line.append(code, copy);
+        item.append(title, line);
+        list.append(item);
+    }
+    box.append(list);
+}
 
 // ---------- Display off and brightness ----------
 
@@ -383,17 +593,34 @@ async function load() {
     if (!data) return;
     sign = data.signs[0];
     presets = data.presets;
+    timezone = data.timezone;
+    keysEnabled = data.keysEnabled;
 
     for (const [name, hex] of COLORS) {
         addChoice(el('colors'), 'color', hex, name, hex);
         addChoice(el('dcolors'), 'dcolor', hex, name, hex);
+        addChoice(el('scolors'), 'scolor', hex, name, hex);
     }
-    addChoice(el('icons'), 'icon', '', 'None');
-    addChoice(el('dicons'), 'dicon', '', 'None');
-    for (const icon of data.icons) {
-        addChoice(el('icons'), 'icon', icon, icon);
-        addChoice(el('dicons'), 'dicon', icon, icon);
+    for (const [container, group] of [['icons', 'icon'], ['dicons', 'dicon'], ['sicons', 'sicon']]) {
+        addChoice(el(container), group, '', 'None');
+        for (const icon of data.icons) addChoice(el(container), group, icon, icon);
     }
+    // Day checkboxes, Monday first.
+    for (const day of [1, 2, 3, 4, 5, 6, 0]) {
+        const wrapper = document.createElement('label');
+        wrapper.className = 'choice';
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.name = 'sday';
+        input.value = day;
+        const span = document.createElement('span');
+        span.textContent = DAY_NAMES[day];
+        wrapper.append(input, span);
+        el('sdays').append(wrapper);
+    }
+    select('scolor', COLORS[0][1]);
+    select('sicon', '');
+    showScheduleKind();
 
     // Start the forms from what the sign already has.
     const custom = sign.settings.custom;
@@ -411,6 +638,7 @@ async function load() {
 
     showSign();
     showPresets();
+    showKeys();
 
     setInterval(refresh, 10000);
     // Tick the countdown, and fetch the new state once a message runs out.
