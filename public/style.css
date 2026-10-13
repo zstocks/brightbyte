@@ -176,3 +176,6 @@ input[type="date"] { font: inherit; color: var(--text); background: var(--bg); b
 .keys code, code { font: 0.8rem ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; overflow-wrap: anywhere; flex: 1; min-width: 0; }
 p code { padding: 1px 5px; }
 .card p { margin: 0 0 8px; }
+
+input[type="file"] { width: 100%; font: inherit; color: var(--muted); padding: 8px 0; }
+input[type="file"]::file-selector-button { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; margin-right: 12px; cursor: pointer; }

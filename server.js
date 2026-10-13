@@ -4,13 +4,15 @@ import { openDatabase } from './src/db.js';
 import { createApp } from './src/app.js';
 import { createDeviceHub } from './src/devices.js';
 import { createSignService } from './src/signs.js';
+import { createFirmwareStore } from './src/firmware.js';
 
 const config = validateConfig();
 const db = openDatabase(config.dataDir);
 const hub = createDeviceHub({ config, db });
 const signs = createSignService({ db, hub, timezone: config.timezone });
 signs.start();
-const server = http.createServer(createApp({ config, db, signs, hub }));
+const firmware = createFirmwareStore(config.dataDir);
+const server = http.createServer(createApp({ config, db, signs, hub, firmware }));
 
 // WebSocket connections from the signs arrive as HTTP upgrades.
 server.on('upgrade', (req, socket, head) => hub.handleUpgrade(req, socket, head));

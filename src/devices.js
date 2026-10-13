@@ -4,6 +4,11 @@
 // A sign connects to wss://<host>/device?sign=<id> with the header
 // "Authorization: Bearer <DEVICE_TOKEN>". It is sent its current
 // state straight away, and again every time the state changes.
+//
+// The sign sends one kind of message back:
+//   {"type":"hello","version":"1.8.0","updateError":"..."}
+// when it connects, saying which firmware it runs and, if its last
+// update attempt failed, why.
 
 import { WebSocketServer } from 'ws';
 import { safeEqual } from './auth.js';
@@ -13,6 +18,7 @@ const HEARTBEAT_MS = 30 * 1000;
 export function createDeviceHub({ config, db, heartbeatMs = HEARTBEAT_MS }) {
     const wss = new WebSocketServer({ noServer: true, maxPayload: 4096 });
     const connections = new Map(); // sign ID -> Set of sockets
+    const reported = new Map();    // sign ID -> { version, updateError }
 
     const stateMessage = (state) => JSON.stringify({ type: 'state', state });
 
@@ -28,6 +34,18 @@ export function createDeviceHub({ config, db, heartbeatMs = HEARTBEAT_MS }) {
         console.log(`Sign "${signId}" connected`);
 
         ws.on('pong', () => { ws.isAlive = true; });
+        ws.on('message', (data) => {
+            let message;
+            try {
+                message = JSON.parse(data.toString());
+            } catch {
+                return; // not JSON; ignore
+            }
+            if (message?.type !== 'hello') return;
+            const clean = (value) => (typeof value === 'string' ? value.slice(0, 120) : null);
+            reported.set(signId, { version: clean(message.version), updateError: clean(message.updateError) });
+            if (message.updateError) console.error(`Sign "${signId}" update failed: ${clean(message.updateError)}`);
+        });
         ws.on('error', (error) => console.error(`Sign "${signId}" socket error:`, error.message));
         ws.on('close', () => {
             connections.get(signId)?.delete(ws);
@@ -74,6 +92,24 @@ export function createDeviceHub({ config, db, heartbeatMs = HEARTBEAT_MS }) {
             for (const ws of connections.get(signId) || []) {
                 if (ws.readyState === ws.OPEN) ws.send(stateMessage(state));
             }
+        },
+
+        // Sends any message to a sign. Returns false if it is offline.
+        send(signId, message) {
+            let sent = false;
+            for (const ws of connections.get(signId) || []) {
+                if (ws.readyState === ws.OPEN) {
+                    ws.send(JSON.stringify(message));
+                    sent = true;
+                }
+            }
+            return sent;
+        },
+
+        // What the sign last said about itself. version is null for a
+        // sign that has not said, such as one on firmware older than 1.8.
+        deviceInfo(signId) {
+            return reported.get(signId) || { version: null, updateError: null };
         },
 
         isOnline(signId) {

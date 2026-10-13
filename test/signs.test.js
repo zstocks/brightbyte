@@ -7,7 +7,11 @@ function setup(t) {
     t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.parse('2026-10-12T12:00:00Z') });
     const db = openDatabase(':memory:');
     const pushed = [];
-    const hub = { pushState: (id, state) => pushed.push(state), isOnline: () => true };
+    const hub = {
+        pushState: (id, state) => pushed.push(state),
+        isOnline: () => true,
+        deviceInfo: () => ({ version: '1.8.0', updateError: null }),
+    };
     const signs = createSignService({ db, hub, timezone: 'America/Denver' });
     signs.start();
     t.after(() => { signs.stop(); db.close(); });

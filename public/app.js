@@ -16,6 +16,7 @@ let editingId = null;  // the preset being edited, if any
 let editingScheduleId = null;
 let timezone = '';
 let keysEnabled = false;
+let firmware = null;    // the uploaded firmware file's details, if any
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 // ---------- Small helpers ----------
@@ -147,6 +148,7 @@ function showSign() {
     el('default-summary').textContent = fallback.mode === 'clock' ? 'Clock' : `"${fallback.text}"`;
     showExpiry();
     showSchedules();
+    showFirmware();
 }
 
 function updated(data, message) {
@@ -530,6 +532,61 @@ function showKeys() {
     box.append(list);
 }
 
+// ---------- Firmware ----------
+
+function showFirmware() {
+    const running = sign.device.version;
+    el('fw-running').textContent = running || (sign.online ? 'an older version that does not report one' : 'unknown while offline');
+    el('fw-uploaded').textContent = firmware
+        ? `${firmware.version} (${(firmware.size / 1024 / 1024).toFixed(2)} MB, ${new Date(firmware.uploadedAt).toLocaleString()})`
+        : 'nothing yet';
+    el('firmware-summary').textContent = running || '';
+    el('fw-error').hidden = !sign.device.updateError;
+    el('fw-error').textContent = sign.device.updateError ? `The last update failed: ${sign.device.updateError}` : '';
+    const upToDate = firmware && running === firmware.version;
+    el('fw-install').disabled = !firmware || !sign.online || upToDate;
+    el('fw-install').textContent = upToDate ? 'The sign is up to date' : 'Install on the sign';
+}
+
+el('fw-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const file = el('fw-file').files[0];
+    if (!file) return;
+    setStatus('Uploading...');
+    try {
+        const response = await fetch('/api/firmware', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/octet-stream', 'X-Firmware-Version': el('fw-version').value.trim() },
+            body: file,
+        });
+        if (response.status === 401) {
+            window.location = '/login';
+            return;
+        }
+        if (response.status === 413) {
+            setStatus('The server refused the file as too large. Check the Nginx upload limit for /api/firmware.', true);
+            return;
+        }
+        const data = await response.json();
+        if (!response.ok) {
+            setStatus(data.error || 'The upload did not work. Try again.', true);
+            return;
+        }
+        firmware = data.firmware;
+        el('fw-form').reset();
+        showFirmware();
+        setStatus(`Uploaded firmware ${firmware.version}. Choose "Install on the sign" when you are ready.`);
+    } catch {
+        setStatus('Could not reach the server. Check your connection and try again.', true);
+    }
+});
+
+el('fw-install').addEventListener('click', async () => {
+    if (!window.confirm(`Install firmware ${firmware.version} on the sign? It will restart.`)) return;
+    const data = await api('POST', `/api/signs/${sign.id}/firmware/install`, {});
+    if (data) setStatus(`Update sent. The sign downloads it and restarts, which takes about a minute.`);
+});
+
 // ---------- Display off and brightness ----------
 
 el('dark').addEventListener('change', async () => {
@@ -579,6 +636,7 @@ async function refresh() {
         if (!response.ok) return;
         const data = await response.json();
         const latest = data.signs.find((item) => item.id === sign.id);
+        firmware = data.firmware;
         if (latest) {
             sign = latest;
             showSign();
@@ -595,6 +653,7 @@ async function load() {
     presets = data.presets;
     timezone = data.timezone;
     keysEnabled = data.keysEnabled;
+    firmware = data.firmware;
 
     for (const [name, hex] of COLORS) {
         addChoice(el('colors'), 'color', hex, name, hex);

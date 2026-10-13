@@ -127,6 +127,7 @@ export function createSignService({ db, hub = null, timezone = 'UTC' }) {
                 scheduleId,
                 schedules: db.listSchedules(sign.id),
                 online: hub ? hub.isOnline(sign.id) : false,
+                device: hub ? hub.deviceInfo(sign.id) : { version: null, updateError: null },
             };
         },
     };

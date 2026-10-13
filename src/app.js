@@ -15,6 +15,7 @@ import {
 const APP_NAME = 'brightbyte';
 const PUBLIC_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const MAX_BODY_BYTES = 10 * 1024;
+const MAX_UPLOAD_BYTES = 2 * 1024 * 1024; // firmware files
 
 // Only these files are ever served. No path from the request touches the disk.
 const STATIC_FILES = {
@@ -22,23 +23,26 @@ const STATIC_FILES = {
     '/style.css': { file: 'style.css', type: 'text/css; charset=utf-8' },
 };
 
-function readBody(req) {
+// Reads a request body as a Buffer, refusing anything over the limit.
+function readBytes(req, limit = MAX_BODY_BYTES) {
     return new Promise((resolve, reject) => {
         let size = 0;
         const chunks = [];
         req.on('data', (chunk) => {
             size += chunk.length;
-            if (size > MAX_BODY_BYTES) {
+            if (size > limit) {
                 reject(new Error('Body too large'));
                 req.destroy();
                 return;
             }
             chunks.push(chunk);
         });
-        req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+        req.on('end', () => resolve(Buffer.concat(chunks)));
         req.on('error', reject);
     });
 }
+
+const readBody = async (req) => (await readBytes(req)).toString('utf8');
 
 function send(res, status, type, body, headers = {}) {
     res.writeHead(status, { 'Content-Type': type, 'Cache-Control': 'no-store', ...headers });
@@ -53,7 +57,8 @@ const redirect = (res, location, headers = {}) =>
 
 // signs is the service from signs.js; hub is the device hub from
 // devices.js, optional so the HTTP side can be tested without it.
-export function createApp({ config, db, signs, hub = null }) {
+// firmware is the store from firmware.js, optional for the same reason.
+export function createApp({ config, db, signs, hub = null, firmware = null }) {
     const limiter = createLoginLimiter();
     const keyLimiter = createLoginLimiter({ maxFailures: 10 });
     const page = (name) => readFileSync(join(PUBLIC_DIR, name), 'utf8');
@@ -160,6 +165,22 @@ export function createApp({ config, db, signs, hub = null }) {
                 return sendJson(res, 404, { error: 'Not found.' });
             }
 
+            // ----- Firmware download, for the sign itself -----
+            if (isRead && path === '/api/device/firmware') {
+                const header = req.headers.authorization || '';
+                const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+                if (!safeEqual(token, config.deviceToken)) return sendJson(res, 401, { error: 'Missing or wrong token.' });
+                const info = firmware?.info();
+                if (!info) return sendJson(res, 404, { error: 'No firmware has been uploaded.' });
+                res.writeHead(200, {
+                    'Content-Type': 'application/octet-stream',
+                    'Content-Length': info.size,
+                    'Cache-Control': 'no-store',
+                });
+                if (method === 'HEAD') return res.end();
+                return firmware.stream().pipe(res);
+            }
+
             // ----- Everything below requires a login -----
             if (!isLoggedIn(req)) {
                 if (path.startsWith('/api/')) return sendJson(res, 401, { error: 'Not logged in.' });
@@ -176,7 +197,24 @@ export function createApp({ config, db, signs, hub = null }) {
                     icons: ICONS,
                     timezone: config.timezone,
                     keysEnabled: Boolean(config.apiToken),
+                    firmware: firmware ? firmware.info() : null,
                 });
+            }
+
+            // Firmware upload: the body is the raw .bin file, so it is
+            // handled before the JSON routes below.
+            if (path === '/api/firmware' && method === 'POST') {
+                if (!sameOrigin(req)) return sendJson(res, 403, { error: 'Forbidden.' });
+                if (!firmware) return sendJson(res, 404, { error: 'Not found.' });
+                let bytes;
+                try {
+                    bytes = await readBytes(req, MAX_UPLOAD_BYTES);
+                } catch {
+                    return sendJson(res, 413, { error: 'That file is too large to fit on the sign.' });
+                }
+                const result = firmware.save(bytes, String(req.headers['x-firmware-version'] || '').trim());
+                if (!result.ok) return sendJson(res, 400, { error: result.error });
+                return sendJson(res, 201, { firmware: result.info });
             }
 
             // Every route below changes something, so it must come
@@ -194,6 +232,17 @@ export function createApp({ config, db, signs, hub = null }) {
                 const changed = (sign) => (sign
                     ? sendJson(res, 200, { sign: signs.view(sign) })
                     : sendJson(res, 404, { error: 'No sign with that ID.' }));
+
+                const installRoute = path.match(/^\/api\/signs\/([a-z0-9-]{1,40})\/firmware\/install$/);
+                if (installRoute && method === 'POST') {
+                    const sign = db.getSign(installRoute[1]);
+                    if (!sign) return sendJson(res, 404, { error: 'No sign with that ID.' });
+                    const info = firmware?.info();
+                    if (!info) return sendJson(res, 400, { error: 'Upload a firmware file first.' });
+                    const sent = hub?.send(sign.id, { type: 'update', version: info.version, size: info.size, md5: info.md5 });
+                    if (!sent) return sendJson(res, 409, { error: 'The sign is offline. Try again when it is connected.' });
+                    return sendJson(res, 200, { sent: true, version: info.version });
+                }
 
                 const signRoute = path.match(/^\/api\/signs\/([a-z0-9-]{1,40})\/(custom|default|dark|brightness)$/);
                 if (signRoute) {

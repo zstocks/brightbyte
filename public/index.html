@@ -145,6 +145,23 @@
             <div id="keys"></div>
         </details>
 
+        <details class="card" id="firmware-card">
+            <summary><h2>Firmware</h2><span id="firmware-summary" class="hint"></span></summary>
+            <p>The sign is running: <strong id="fw-running">...</strong></p>
+            <p>Uploaded here: <strong id="fw-uploaded">...</strong></p>
+            <p id="fw-error" class="error" hidden></p>
+            <button type="button" id="fw-install">Install on the sign</button>
+
+            <form id="fw-form" class="subform">
+                <h3>Upload new firmware</h3>
+                <label for="fw-version">Version</label>
+                <input id="fw-version" type="text" maxlength="32" autocomplete="off" placeholder="1.8.1" required>
+                <label for="fw-file" class="spaced">File (firmware.bin)</label>
+                <input id="fw-file" type="file" accept=".bin,application/octet-stream" required>
+                <button type="submit" class="primary">Upload</button>
+            </form>
+        </details>
+
         <details class="card">
             <summary><h2>When nothing else is showing</h2><span id="default-summary" class="hint"></span></summary>
             <form id="default-form">
