@@ -8,7 +8,9 @@ import {
     SESSION_COOKIE, createLoginLimiter, createSession, parseCookies,
     safeEqual, sessionCookie, verifySession,
 } from './auth.js';
-import { ICONS, validateState } from './state.js';
+import {
+    ICONS, validateBrightness, validateCustom, validateDefault, validatePreset,
+} from './state.js';
 
 const APP_NAME = 'brightbyte';
 const PUBLIC_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -49,9 +51,9 @@ const sendJson = (res, status, data) =>
 const redirect = (res, location, headers = {}) =>
     send(res, 303, 'text/plain; charset=utf-8', 'Redirecting', { Location: location, ...headers });
 
-// hub is the device hub from devices.js. It is optional so the
-// HTTP side can be tested without it.
-export function createApp({ config, db, hub = null }) {
+// signs is the service from signs.js; hub is the device hub from
+// devices.js, optional so the HTTP side can be tested without it.
+export function createApp({ config, db, signs, hub = null }) {
     const limiter = createLoginLimiter();
     const page = (name) => readFileSync(join(PUBLIC_DIR, name), 'utf8');
     const loginPage = page('login.html');
@@ -127,29 +129,78 @@ export function createApp({ config, db, hub = null }) {
             if (isRead && path === '/') {
                 return send(res, 200, 'text/html; charset=utf-8', dashboardPage);
             }
+            const withOnline = (sign) => ({ ...sign, online: hub ? hub.isOnline(sign.id) : false });
+
             if (isRead && path === '/api/signs') {
-                const signs = db.listSigns().map((sign) => ({
-                    ...sign,
-                    online: hub ? hub.isOnline(sign.id) : false,
-                }));
-                return sendJson(res, 200, { signs, icons: ICONS });
+                return sendJson(res, 200, {
+                    signs: db.listSigns().map(withOnline),
+                    presets: db.listPresets(),
+                    icons: ICONS,
+                });
             }
 
-            const stateRoute = path.match(/^\/api\/signs\/([a-z0-9-]{1,40})\/state$/);
-            if (stateRoute && method === 'PUT') {
+            // Every route below changes something, so it must come
+            // from our own pages and carry a JSON body where needed.
+            if (path.startsWith('/api/') && !isRead) {
                 if (!sameOrigin(req)) return sendJson(res, 403, { error: 'Forbidden.' });
-                let input;
-                try {
-                    input = JSON.parse(await readBody(req));
-                } catch {
-                    return sendJson(res, 400, { error: 'Request body must be JSON.' });
+                let body = null;
+                if (method !== 'DELETE') {
+                    try {
+                        body = JSON.parse(await readBody(req));
+                    } catch {
+                        return sendJson(res, 400, { error: 'Request body must be JSON.' });
+                    }
                 }
-                const result = validateState(input);
-                if (!result.ok) return sendJson(res, 400, { error: result.error });
-                const sign = db.saveState(stateRoute[1], result.state);
-                if (!sign) return sendJson(res, 404, { error: 'No sign with that ID.' });
-                if (hub) hub.pushState(sign.id, sign.state);
-                return sendJson(res, 200, { sign: { ...sign, online: hub ? hub.isOnline(sign.id) : false } });
+                const changed = (sign) => (sign
+                    ? sendJson(res, 200, { sign: withOnline(sign) })
+                    : sendJson(res, 404, { error: 'No sign with that ID.' }));
+
+                const signRoute = path.match(/^\/api\/signs\/([a-z0-9-]{1,40})\/(custom|default|dark|brightness)$/);
+                if (signRoute) {
+                    const [, signId, what] = signRoute;
+                    if (what === 'custom' && method === 'PUT') {
+                        const result = validateCustom(body);
+                        if (!result.ok) return sendJson(res, 400, { error: result.error });
+                        return changed(signs.setCustom(signId, result.custom));
+                    }
+                    if (what === 'custom' && method === 'DELETE') {
+                        return changed(signs.clearCustom(signId));
+                    }
+                    if (what === 'default' && method === 'PUT') {
+                        const result = validateDefault(body);
+                        if (!result.ok) return sendJson(res, 400, { error: result.error });
+                        return changed(signs.setDefault(signId, result.default));
+                    }
+                    if (what === 'dark' && method === 'PUT') {
+                        if (typeof body?.dark !== 'boolean') return sendJson(res, 400, { error: 'dark must be true or false.' });
+                        return changed(signs.setDark(signId, body.dark));
+                    }
+                    if (what === 'brightness' && method === 'PUT') {
+                        const result = validateBrightness(body?.brightness);
+                        if (!result.ok) return sendJson(res, 400, { error: result.error });
+                        return changed(signs.setBrightness(signId, result.brightness));
+                    }
+                }
+
+                if (path === '/api/presets' && method === 'POST') {
+                    const result = validatePreset(body);
+                    if (!result.ok) return sendJson(res, 400, { error: result.error });
+                    return sendJson(res, 201, { preset: db.createPreset(result.preset) });
+                }
+                const presetRoute = path.match(/^\/api\/presets\/(\d{1,9})$/);
+                if (presetRoute && method === 'PUT') {
+                    const result = validatePreset(body);
+                    if (!result.ok) return sendJson(res, 400, { error: result.error });
+                    const preset = db.updatePreset(Number(presetRoute[1]), result.preset);
+                    return preset
+                        ? sendJson(res, 200, { preset })
+                        : sendJson(res, 404, { error: 'No preset with that ID.' });
+                }
+                if (presetRoute && method === 'DELETE') {
+                    return db.deletePreset(Number(presetRoute[1]))
+                        ? sendJson(res, 200, { deleted: true })
+                        : sendJson(res, 404, { error: 'No preset with that ID.' });
+                }
             }
 
             if (path.startsWith('/api/')) return sendJson(res, 404, { error: 'Not found.' });

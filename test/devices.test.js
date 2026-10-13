@@ -5,6 +5,7 @@ import { WebSocket } from 'ws';
 import { createApp } from '../src/app.js';
 import { createDeviceHub } from '../src/devices.js';
 import { openDatabase } from '../src/db.js';
+import { createSignService } from '../src/signs.js';
 import { createSession, SESSION_COOKIE } from '../src/auth.js';
 
 const config = {
@@ -14,12 +15,14 @@ const config = {
     secureCookies: false,
 };
 
-let server, db, hub, port, cookie;
+let server, db, hub, signs, port, cookie;
 
 before(async () => {
     db = openDatabase(':memory:');
     hub = createDeviceHub({ config, db, heartbeatMs: 50 });
-    server = http.createServer(createApp({ config, db, hub }));
+    signs = createSignService({ db, hub });
+    signs.start();
+    server = http.createServer(createApp({ config, db, signs, hub }));
     server.on('upgrade', (req, socket, head) => hub.handleUpgrade(req, socket, head));
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     port = server.address().port;
@@ -27,6 +30,7 @@ before(async () => {
 });
 
 after(() => {
+    signs.stop();
     hub.close();
     server.close();
     db.close();
@@ -55,10 +59,10 @@ function connect({ token = config.deviceToken, sign = 'desk', path = '/device' }
     return { ws, next, opened };
 }
 
-const putState = (state) => fetch(`http://127.0.0.1:${port}/api/signs/desk/state`, {
+const put = (what, body) => fetch(`http://127.0.0.1:${port}/api/signs/desk/${what}`, {
     method: 'PUT',
     headers: { Cookie: cookie, 'Content-Type': 'application/json' },
-    body: JSON.stringify(state),
+    body: JSON.stringify(body),
 });
 
 test('a sign with the wrong token is refused', async () => {
@@ -80,11 +84,11 @@ test('a sign gets its state on connect and again on every change', async () => {
     assert.equal(first.state.mode, 'clock');
     assert.equal(hub.isOnline('desk'), true);
 
-    const response = await putState({ mode: 'message', text: 'Busy', color: '#ff1e1e', icon: 'dnd' });
+    const response = await put('custom', { text: 'Busy', color: '#ff1e1e', icon: 'dnd', expiresAt: null });
     assert.equal((await response.json()).sign.online, true);
     assert.deepEqual(await device.next(), {
         type: 'state',
-        state: { mode: 'message', text: 'Busy', color: '#ff1e1e', icon: 'dnd' },
+        state: { mode: 'message', text: 'Busy', color: '#ff1e1e', icon: 'dnd', brightness: 30 },
     });
 
     device.ws.close();
@@ -94,7 +98,7 @@ test('a sign gets its state on connect and again on every change', async () => {
 });
 
 test('a sign that reconnects later gets the latest state', async () => {
-    await putState({ mode: 'dark' });
+    await put('dark', { dark: true });
     const device = connect();
     await device.opened;
     assert.equal((await device.next()).state.mode, 'dark');

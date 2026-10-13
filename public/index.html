@@ -21,14 +21,31 @@
                 <span id="online" class="badge">...</span>
             </div>
             <p class="now">Now showing: <strong id="now-showing">...</strong></p>
-            <p class="updated" id="updated"></p>
+            <p class="updated" id="expiry"></p>
+            <button type="button" id="clear-now" hidden>Clear message</button>
+
+            <div class="setting">
+                <label for="dark">Display off</label>
+                <input type="checkbox" id="dark" class="switch" role="switch">
+            </div>
+            <div class="setting">
+                <label for="brightness">Brightness</label>
+                <input type="range" id="brightness" min="1" max="100" step="1">
+                <output id="brightness-value" for="brightness"></output>
+            </div>
         </section>
 
         <section class="card">
-            <h2>Send a message</h2>
+            <h2>Presets</h2>
+            <ul id="presets" class="presets"></ul>
+            <p id="no-presets" class="hint" hidden>No presets yet. Fill in a message and choose "Save as preset".</p>
+        </section>
+
+        <section class="card">
+            <h2 id="form-title">Send a message</h2>
             <form id="message-form">
                 <label for="text">Message</label>
-                <input id="text" name="text" type="text" maxlength="200" autocomplete="off" required>
+                <input id="text" type="text" maxlength="200" autocomplete="off" required>
 
                 <fieldset>
                     <legend>Color</legend>
@@ -40,17 +57,62 @@
                     <div class="choices" id="icons"></div>
                 </fieldset>
 
+                <label for="clear" class="spaced">Clear it</label>
+                <div class="row">
+                    <select id="clear">
+                        <option value="manual">When I clear it</option>
+                        <option value="15">After 15 minutes</option>
+                        <option value="30">After 30 minutes</option>
+                        <option value="60">After 1 hour</option>
+                        <option value="120">After 2 hours</option>
+                        <option value="custom">After a number of minutes</option>
+                        <option value="time">At a time</option>
+                    </select>
+                    <input id="clear-minutes" type="number" min="1" max="10080" step="1" inputmode="numeric" aria-label="Minutes" placeholder="Minutes" hidden>
+                    <input id="clear-time" type="time" aria-label="Clear at" hidden>
+                </div>
+
                 <button type="submit" class="primary">Send to sign</button>
             </form>
-        </section>
 
-        <section class="card">
-            <h2>Other modes</h2>
-            <div class="row">
-                <button type="button" id="show-clock">Show clock</button>
-                <button type="button" id="go-dark">Turn display off</button>
+            <div class="preset-save">
+                <label for="preset-name">Save this as a preset</label>
+                <div class="row">
+                    <input id="preset-name" type="text" maxlength="40" autocomplete="off" placeholder="Preset name">
+                    <button type="button" id="save-preset">Save as preset</button>
+                    <button type="button" id="cancel-edit" class="quiet" hidden>Cancel</button>
+                </div>
             </div>
         </section>
+
+        <details class="card">
+            <summary><h2>When nothing else is showing</h2><span id="default-summary" class="hint"></span></summary>
+            <form id="default-form">
+                <fieldset>
+                    <legend>Show</legend>
+                    <div class="choices">
+                        <label class="choice"><input type="radio" name="dmode" value="clock"><span>Clock</span></label>
+                        <label class="choice"><input type="radio" name="dmode" value="message"><span>A message</span></label>
+                    </div>
+                </fieldset>
+
+                <div id="default-message-fields">
+                    <label for="dtext" class="spaced">Message</label>
+                    <input id="dtext" type="text" maxlength="200" autocomplete="off">
+                    <fieldset>
+                        <legend>Icon</legend>
+                        <div class="choices" id="dicons"></div>
+                    </fieldset>
+                </div>
+
+                <fieldset>
+                    <legend>Color</legend>
+                    <div class="choices" id="dcolors"></div>
+                </fieldset>
+
+                <button type="submit" class="primary">Save default</button>
+            </form>
+        </details>
 
         <p id="status" role="status" aria-live="polite"></p>
     </main>

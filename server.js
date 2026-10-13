@@ -3,11 +3,14 @@ import { validateConfig } from './src/config.js';
 import { openDatabase } from './src/db.js';
 import { createApp } from './src/app.js';
 import { createDeviceHub } from './src/devices.js';
+import { createSignService } from './src/signs.js';
 
 const config = validateConfig();
 const db = openDatabase(config.dataDir);
 const hub = createDeviceHub({ config, db });
-const server = http.createServer(createApp({ config, db, hub }));
+const signs = createSignService({ db, hub });
+signs.start();
+const server = http.createServer(createApp({ config, db, signs, hub }));
 
 // WebSocket connections from the signs arrive as HTTP upgrades.
 server.on('upgrade', (req, socket, head) => hub.handleUpgrade(req, socket, head));
@@ -20,6 +23,7 @@ server.listen(config.port, '0.0.0.0', () => {
 // Close cleanly when Docker stops the container.
 for (const signal of ['SIGTERM', 'SIGINT']) {
     process.on(signal, () => {
+        signs.stop();
         hub.close();
         server.close(() => {
             db.close();
